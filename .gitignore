@@ -1,160 +1,48 @@
-# CSV data files (large datasets)############################
+############################################
+# Simplified .gitignore for this project
+# (Keeps only the essentials)
+############################################
 
-*.csv# Project Ignore Rules
+# Large dataset files (not committed)
+*.csv
+data/*.csv
 
-data/*.csv############################
-
-
-
-# Python# Ignore all CSV data files (large datasets)
-
-__pycache__/*.csv
-
-*.py[cod]data/*.csv
-
-*$py.class
-
-*.so# (Optional) Keep specific small/sample CSVs - uncomment as needed
-
-.Python# !data/sample_small.csv
-
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
 build/
-
-develop-eggs/# Python cache / build artifacts
-
-dist/__pycache__/
-
-downloads/*.py[cod]
-
-eggs/*.egg-info/
-
-.eggs/build/
-
-lib/dist/
-
-lib64/
-
-parts/# Virtual environment folders
-
-sdist/venv/
-
-var/.venv/
-
-wheels/env/
-
+dist/
 *.egg-info/
 
-.installed.cfg# Jupyter Notebook checkpoints
-
-*.egg.ipynb_checkpoints/
-
-
-
-# PyInstaller# OS / Editor files
-
-*.manifest.DS_Store
-
-*.specThumbs.db
-
-*.swp
-
-# Installer logs
-
-pip-log.txt# Logs
-
-pip-delete-this-directory.txt*.log
-
-
-
-# Unit test / coverage reports# VS Code settings (optional to ignore)
-
-htmlcov/.vscode/
-
-.tox/
-
-.coverage# PyCharm
-
-.coverage.*.idea/
-
-.cache
-
-nosetests.xml############################
-
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# celery beat schedule file
-celerybeat-schedule
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
+# Virtual environments & local env files
+.venv/
 venv/
+env/
 ENV/
-env.bak/
-venv.bak/
+.env
 
-# Spyder project settings
-.spyderproject
-.spyproject
+# Jupyter checkpoints
+.ipynb_checkpoints/
 
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
+# Logs & caches
+*.log
 .mypy_cache/
-.dmypy.json
-dmypy.json
+.pytest_cache/
+.cache/
 
-# IDE
+# IDE/editor settings
 .vscode/
 .idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Swap / temp
 *.swp
 *.swo
 *~
 
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# (Add more rules if needed later)
