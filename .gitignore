@@ -1,0 +1,160 @@
+# CSV data files (large datasets)############################
+
+*.csv# Project Ignore Rules
+
+data/*.csv############################
+
+
+
+# Python# Ignore all CSV data files (large datasets)
+
+__pycache__/*.csv
+
+*.py[cod]data/*.csv
+
+*$py.class
+
+*.so# (Optional) Keep specific small/sample CSVs - uncomment as needed
+
+.Python# !data/sample_small.csv
+
+build/
+
+develop-eggs/# Python cache / build artifacts
+
+dist/__pycache__/
+
+downloads/*.py[cod]
+
+eggs/*.egg-info/
+
+.eggs/build/
+
+lib/dist/
+
+lib64/
+
+parts/# Virtual environment folders
+
+sdist/venv/
+
+var/.venv/
+
+wheels/env/
+
+*.egg-info/
+
+.installed.cfg# Jupyter Notebook checkpoints
+
+*.egg.ipynb_checkpoints/
+
+
+
+# PyInstaller# OS / Editor files
+
+*.manifest.DS_Store
+
+*.specThumbs.db
+
+*.swp
+
+# Installer logs
+
+pip-log.txt# Logs
+
+pip-delete-this-directory.txt*.log
+
+
+
+# Unit test / coverage reports# VS Code settings (optional to ignore)
+
+htmlcov/.vscode/
+
+.tox/
+
+.coverage# PyCharm
+
+.coverage.*.idea/
+
+.cache
+
+nosetests.xml############################
+
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# celery beat schedule file
+celerybeat-schedule
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
