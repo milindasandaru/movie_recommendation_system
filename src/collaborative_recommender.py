@@ -1,19 +1,20 @@
-"""Collaborative filtering recommender (matrix factorization via Surprise).
+"""Collaborative filtering recommender (pure scikit-learn SVD fallback).
 
-This module provides a simple wrapper around the Surprise SVD algorithm.
-It loads ratings lazily from `data/ratings.csv` (ignored by git), fits an
-SVD model, and can produce top-N recommendations for a given user based
-on predicted ratings for unseen items.
+This implementation avoids the `scikit-surprise` dependency (which failed to
+build under the current Python environment) by using a simple latent factor
+model learned via TruncatedSVD over the user-item rating matrix.
 
-It also offers a helper to compute a naive precision@K using a content
-recommender to generate candidate items (hybrid-ish evaluation example).
+Pipeline:
+ 1. Load ratings (or accept an in-memory DataFrame) with columns userId, movieId, rating.
+ 2. Build a dense user-item matrix (NaNs -> 0).
+ 3. Apply TruncatedSVD to obtain user and item latent embeddings.
+ 4. Reconstruct approximate preference scores (dot product) for ranking.
 
-Key differences from the previous version:
- - Converted ad-hoc script into a class `CollaborativeRecommender`.
- - Removed global code execution on import (no immediate CSV load).
- - Fixed inconsistent column name typo: used `userId` (MovieLens spec) instead of `userID`.
- - Added defensive checks and comments for clarity.
- - Isolated evaluation logic from training logic.
+Notes / Simplifications:
+ - Zero-fill for missing ratings biases toward popular items; for a real system
+   consider mean-centering or using implicit feedback weighting.
+ - No regularization / bias terms; this is strictly educational scaffolding.
+ - Designed to fail gracefully (returns empty lists if data missing).
 """
 
 from __future__ import annotations
@@ -22,169 +23,236 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-from surprise import SVD, Dataset, Reader
-from surprise.model_selection import train_test_split, accuracy
+from sklearn.decomposition import TruncatedSVD
+import numpy as np
+from scipy.sparse import coo_matrix, csr_matrix
 
-try:  # Optional import if content recommender available
-    from .content_recommender import ContentRecommender
-except Exception:  # pragma: no cover - soft fail for modular use
+try:  # Optional content recommender reference
+    from .content_recommender import ContentRecommender  # type: ignore
+except Exception:  # pragma: no cover
     ContentRecommender = None  # type: ignore
 
 
 class CollaborativeRecommender:
-    """Wrapper around Surprise SVD for movie recommendations."""
+    """Latent-factor collaborative filtering with TruncatedSVD."""
 
     def __init__(
         self,
         ratings_path: Path | str = Path("data") / "ratings.csv",
-        rating_scale: tuple[float, float] = (0.5, 5.0),
+        n_components: int = 50,
+        min_ratings_user: int = 1,
+        min_ratings_item: int = 1,
+        max_users: Optional[int] = 20000,
+        max_items: Optional[int] = 15000,
+        top_items_strategy: str = "popularity",  # or 'ratings_count'
     ) -> None:
         self.ratings_path = Path(ratings_path)
-        self.rating_scale = rating_scale
+        self.n_components = n_components
+        self.min_ratings_user = min_ratings_user
+        self.min_ratings_item = min_ratings_item
+        self.max_users = max_users
+        self.max_items = max_items
+        self.top_items_strategy = top_items_strategy
+
+        # Internal artifacts
         self._ratings: Optional[pd.DataFrame] = None
-        self._algo: Optional[SVD] = None
-        self._fitted: bool = False
+        self._user_index: dict[int, int] = {}
+        self._movie_index: dict[int, int] = {}
+        self._index_user: list[int] = []
+        self._index_movie: list[int] = []
+        self._user_factors: Optional[np.ndarray] = None
+        self._item_factors: Optional[np.ndarray] = None
+    # Large dense score matrix avoided for memory reasons; we compute per-user scores lazily.
+        self._fitted = False
 
-    # -------------------- Internal utilities -------------------- #
+    # -------------------- Data Loading -------------------- #
     def _load_ratings(self) -> bool:
-        """Load ratings DataFrame if present.
-
-        Returns True if loaded, False if file missing.
-        """
+        if self._ratings is not None:
+            return True
         if not self.ratings_path.exists():
             return False
         df = pd.read_csv(self.ratings_path)
-        # Basic schema normalization
-        expected_cols = {"userId", "movieId", "rating"}
-        if not expected_cols.issubset(df.columns):
-            raise ValueError(
-                f"ratings.csv must contain columns {expected_cols}, found {set(df.columns)}"
-            )
+        required = {"userId", "movieId", "rating"}
+        if not required.issubset(df.columns):
+            raise ValueError(f"ratings data must have columns {required}")
         self._ratings = df
         return True
 
-    # -------------------- Public API -------------------- #
-    def fit(self) -> None:
-        """Train the SVD model using Surprise.
+    # -------------------- Fitting -------------------- #
+    def fit(self, ratings_df: Optional[pd.DataFrame] = None) -> None:
+        """Fit latent factors.
 
-        Loads ratings lazily, splits into train/test for a quick evaluation
-        (prints RMSE), then retains the fitted algorithm for inference.
+        Args:
+            ratings_df: Optional external DataFrame (userId, movieId, rating).
+                        If omitted, tries to load from `ratings_path`.
         """
-        if not self._load_ratings():  # Ratings missing
+        if ratings_df is not None:
+            self._ratings = ratings_df.copy()
+        elif not self._load_ratings():
             self._fitted = False
             return
 
         assert self._ratings is not None
-        reader = Reader(rating_scale=self.rating_scale)
-        data = Dataset.load_from_df(self._ratings[["userId", "movieId", "rating"]], reader)
-        trainset, testset = train_test_split(data, test_size=0.2)
+        df = self._ratings
 
-        algo = SVD()
-        algo.fit(trainset)
-        # Quick evaluation (side-effect print) — optional; could be logged
-        predictions = algo.test(testset)
-        try:
-            accuracy.rmse(predictions)
-        except Exception:
-            pass
+        # Basic filtering (drop extremely sparse users/items if thresholds set)
+        if self.min_ratings_user > 1:
+            user_counts = df.groupby('userId').size()
+            keep_users = user_counts[user_counts >= self.min_ratings_user].index
+            df = df[df.userId.isin(keep_users)]
+        if self.min_ratings_item > 1:
+            item_counts = df.groupby('movieId').size()
+            keep_items = item_counts[item_counts >= self.min_ratings_item].index
+            df = df[df.movieId.isin(keep_items)]
 
-        self._algo = algo
+        if df.empty:
+            self._fitted = False
+            return
+
+        # OPTIONAL SAMPLING / LIMITING for scalability ---------------------------------
+        # Limit users by activity if exceeding max_users
+        if self.max_users is not None:
+            user_activity = df.groupby('userId').size().sort_values(ascending=False)
+            if len(user_activity) > self.max_users:
+                keep_users = set(user_activity.head(self.max_users).index)
+                df = df[df.userId.isin(keep_users)]
+
+        # Limit items by popularity / ratings count if exceeding max_items
+        if self.max_items is not None:
+            item_pop = df.groupby('movieId').agg({'rating': ['count', 'mean']})
+            item_pop.columns = ['count', 'mean']
+            if len(item_pop) > self.max_items:
+                if self.top_items_strategy == 'popularity':
+                    top_items = set(item_pop.sort_values('count', ascending=False).head(self.max_items).index)
+                else:  # ratings_count alias
+                    top_items = set(item_pop.sort_values('count', ascending=False).head(self.max_items).index)
+                df = df[df.movieId.isin(top_items)]
+
+        if df.empty:
+            self._fitted = False
+            return
+
+        # Build sparse matrix (users x movies) ------------------------------------------------
+        user_codes = df['userId'].astype('category')
+        movie_codes = df['movieId'].astype('category')
+        rows = user_codes.cat.codes.to_numpy()
+        cols = movie_codes.cat.codes.to_numpy()
+        data = df['rating'].astype(float).to_numpy()
+        n_users = rows.max() + 1
+        n_items = cols.max() + 1
+
+        sparse_matrix: csr_matrix = coo_matrix((data, (rows, cols)), shape=(n_users, n_items)).tocsr()
+
+        # Store mapping back to real IDs
+        self._index_user = [int(u) for u in user_codes.cat.categories]
+        self._index_movie = [int(m) for m in movie_codes.cat.categories]
+        self._user_index = {u: i for i, u in enumerate(self._index_user)}
+        self._movie_index = {m: i for i, m in enumerate(self._index_movie)}
+
+        # Adjust component count (cannot exceed min(n_users, n_items) - 1)
+        max_components = max(1, min(n_users - 1, n_items - 1))
+        n_comp = min(self.n_components, max_components)
+
+        svd = TruncatedSVD(n_components=n_comp, random_state=42)
+        user_factors = svd.fit_transform(sparse_matrix)  # (num_users, k)
+        item_factors = svd.components_.T  # (num_items, k)
+
+        self._user_factors = user_factors
+        self._item_factors = item_factors
         self._fitted = True
 
     def is_fitted(self) -> bool:
         return self._fitted
 
+    # -------------------- Recommendation -------------------- #
     def recommend(self, user_id: int, n: int = 10) -> List[dict]:
-        """Recommend top-N movies for a given user based on predicted rating.
+        """Return top-N movie recommendations for a user.
 
         Strategy:
-          1. Ensure model is fitted (lazy fit attempted).
-          2. Identify movies the user has NOT rated.
-          3. Predict ratings for those movies using SVD.
-          4. Return the top-N by predicted rating.
+          * Lazy fit if needed.
+          * If user unseen -> return empty list (could fallback to popular items).
+          * Rank by predicted latent score excluding already-rated items.
         """
         if not self._fitted:
             self.fit()
             if not self._fitted:
                 return []
 
-        assert self._ratings is not None and self._algo is not None
-
-        user_rated = set(self._ratings[self._ratings.userId == user_id].movieId)
-        all_movie_ids = set(self._ratings.movieId.unique())
-        unseen = list(all_movie_ids - user_rated)
-        if not unseen:
+        assert self._ratings is not None
+        if user_id not in self._user_index:
             return []
 
-        # Predict ratings for unseen movies
-        preds = []
-        for mid in unseen:
-            est = self._algo.predict(uid=user_id, iid=mid).est
-            preds.append((mid, est))
+        uidx = self._user_index[user_id]
+    assert self._user_factors is not None and self._item_factors is not None
+    user_vector = self._user_factors[uidx]
+    # Compute scores lazily: dot with all item factors
+    user_scores = user_vector @ self._item_factors.T  # shape (num_items,)
 
-        # Sort by estimated rating descending and take top-n
-        preds.sort(key=lambda x: x[1], reverse=True)
-        top = preds[:n]
+        # Exclude rated items
+        rated_items = set(self._ratings[self._ratings.userId == user_id].movieId)
+
+        candidates = []
+        for mid, midx in self._movie_index.items():
+            if mid in rated_items:
+                continue
+            candidates.append((mid, user_scores[midx]))
+
+        if not candidates:
+            return []
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        top = candidates[:n]
         return [
-            {"movieId": mid, "predicted_rating": round(score, 3)}
+            {"movieId": mid, "score": round(float(score), 4)}
             for mid, score in top
         ]
 
-    # -------------------- Evaluation Helper -------------------- #
+    # -------------------- Precision@K (Illustrative) -------------------- #
     def precision_at_k(
         self,
-    user_id: int,
-    content_recommender: Optional[object] = None,
+        user_id: int,
+        content_recommender: Optional[object] = None,
         k: int = 10,
         relevance_threshold: float = 4.0,
     ) -> float:
-        """Compute a naive precision@k for a user's liked movies.
+        """Very naive precision@k using content-based similar titles.
 
-        If a content-based recommender is supplied, we: pick one liked movie,
-        generate K similar titles, and measure how many are also liked.
-
-        NOTE: This is illustrative only and not a rigorous evaluation metric.
+        Not a rigorous evaluation; for demonstration only.
         """
         if self._ratings is None:
             if not self._load_ratings():
                 return 0.0
-
         assert self._ratings is not None
         user_rows = self._ratings[self._ratings.userId == user_id]
         liked = user_rows[user_rows.rating >= relevance_threshold]["movieId"]
         if liked.empty:
             return 0.0
-
         if content_recommender is None or not hasattr(content_recommender, "recommend"):
             return 0.0
-
-        # Use first liked movie as anchor
-        anchor_id = liked.iloc[0]
-        # Find title from content recommender's movie frame if available
+        anchor = liked.iloc[0]
+        # Attempt to map anchor to title via content recommender
         title = None
-        if getattr(content_recommender, "_movies", None) is not None:
-            df_movies = content_recommender._movies  # type: ignore[attr-defined]
-            match = df_movies[df_movies.movieId == anchor_id]
+        movies_df = getattr(content_recommender, "_movies", None)
+        if movies_df is not None:
+            match = movies_df[movies_df.movieId == anchor]
             if not match.empty:
                 title = match.iloc[0].title
         if title is None:
             return 0.0
-
         recs = content_recommender.recommend(title, k)
         rec_ids = {r.get("movieId") for r in recs}
         if not rec_ids:
             return 0.0
-
-        precision = len(set(liked).intersection(rec_ids)) / float(k)
-        return precision
+        return len(set(liked).intersection(rec_ids)) / float(k)
 
 
-if __name__ == "__main__":  # Manual quick smoke test (will be no-op if data missing)
+if __name__ == "__main__":  # Simple self-test with synthetic data
+    # Build a tiny synthetic rating set if real data missing
+    synth = pd.DataFrame({
+        'userId': [1, 1, 1, 2, 2, 3, 3, 4],
+        'movieId': [10, 11, 12, 10, 13, 11, 14, 12],
+        'rating': [5, 4, 3, 4, 5, 2, 4, 5]
+    })
     cr = CollaborativeRecommender()
-    print("Fitting collaborative recommender (if data present)...")
-    cr.fit()
-    if cr.is_fitted():
-        sample_user = int(cr._ratings.userId.sample(1).iloc[0])  # type: ignore
-        print("Sample recommendations:", cr.recommend(sample_user, 5))
-    else:
-        print("ratings.csv not found; skipped training.")
+    cr.fit(synth)
+    print("Recommendations for user 1:", cr.recommend(1, 5))
