@@ -48,6 +48,7 @@ class ContentRecommender:
         Safe to call multiple times; rebuilds internal structures.
         Missing files result in a silent no-op (fitted remains False).
         """
+        # Guard: if either data file is missing we simply mark as not fitted
         if not self.movies_path.exists() or not self.tags_path.exists():
             # Silently skip if data not available
             self._fitted = False
@@ -63,12 +64,14 @@ class ContentRecommender:
         if 'title' not in movies.columns:
             raise ValueError("'movies.csv' must contain a 'title' column")
         if 'genres' not in movies.columns:
+            # Some datasets may omit genres; fill with empty string
             movies['genres'] = ""
 
         if 'movieId' not in tags.columns or 'tag' not in tags.columns:
             # Create empty tags frame if structure unexpected
             tags = pd.DataFrame({'movieId': [], 'tag': []})
 
+        # Normalise tag text & aggregate all tags per movie into one string
         tags['tag'] = tags['tag'].fillna("")
         agg_tags = (
             tags.groupby('movieId')['tag']
@@ -76,6 +79,7 @@ class ContentRecommender:
             .reset_index()
         )
 
+        # Left join so movies without tags are retained
         movies = movies.merge(agg_tags, on='movieId', how='left')
         movies['tag'] = movies['tag'].fillna("")
 
@@ -87,6 +91,8 @@ class ContentRecommender:
         )
 
         # Vectorize
+        # TF-IDF converts the free-text (title + genres + tags) into a sparse
+        # numeric matrix where each column is a term-weight. Stop words removed.
         tfidf = TfidfVectorizer(stop_words='english')
         tfidf_matrix = tfidf.fit_transform(movies['content'])
         # Do NOT compute the full NxN cosine similarity matrix here — it's
@@ -95,7 +101,9 @@ class ContentRecommender:
         # TF-IDF matrix.
 
         # Store artifacts
+        # Reset index so we have a clean 0..N-1 mapping for row lookups
         movies = movies.reset_index(drop=True)
+        # Map from title -> row index (drop duplicates to first occurrence)
         indices = pd.Series(movies.index, index=movies['title']).drop_duplicates()
 
         self._movies = movies
@@ -121,6 +129,7 @@ class ContentRecommender:
             # Attempt lazy fit
             self.fit()
             if not self._fitted:
+                # Still not fitted (likely missing data files) -> empty result
                 return []
 
         assert self._movies is not None
@@ -133,6 +142,7 @@ class ContentRecommender:
             if title.lower() in lower_map:
                 title = lower_map[title.lower()]
             else:
+                # Title genuinely not found
                 return []
 
         idx = self._indices[title]
@@ -147,6 +157,7 @@ class ContentRecommender:
         sim_indices = sim_array.argsort()[::-1]
         sim_indices = [i for i in sim_indices if i != idx][:n]
         movie_indices = sim_indices
+        # Slice only required columns and convert each row to a dict
         result_df = self._movies.loc[movie_indices, ['movieId', 'title', 'genres']]
         return result_df.to_dict(orient='records')
 
