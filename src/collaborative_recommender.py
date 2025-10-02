@@ -183,10 +183,10 @@ class CollaborativeRecommender:
             return []
 
         uidx = self._user_index[user_id]
-    assert self._user_factors is not None and self._item_factors is not None
-    user_vector = self._user_factors[uidx]
-    # Compute scores lazily: dot with all item factors
-    user_scores = user_vector @ self._item_factors.T  # shape (num_items,)
+        assert self._user_factors is not None and self._item_factors is not None
+        user_vector = self._user_factors[uidx]
+        # Compute scores lazily: dot with all item factors
+        user_scores = user_vector @ self._item_factors.T  # shape (num_items,)
 
         # Exclude rated items
         rated_items = set(self._ratings[self._ratings.userId == user_id].movieId)

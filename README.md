@@ -11,136 +11,9 @@ The repository excludes raw CSV datasets (MovieLens or similar) to keep the git 
 
 ---
 
-## 1. Project Structure
-
-```
-movie_recommendation_system/
-	app.py                    # CLI entrypoint
-	requirements.txt          # Python dependencies
-	README.md                 # This file
-	data/                     # (Ignored) Put movies.csv, ratings.csv, tags.csv here
-		README.md               # Instructions for obtaining datasets
-	src/
-		content_recommender.py  # Content-based model
-		collaborative_recommender.py # Collaborative (TruncatedSVD) model
-		hybrid_recommender.py   # Hybrid orchestrator
-	notebooks/
-		eda.ipynb               # Exploratory Data Analysis starter
-		content_based.ipynb     # Content model experimentation
-		collaborative.ipynb     # Collaborative model experimentation
-```
-
 ---
 
-## 2. Data Requirements
-
-Minimum CSV files expected (MovieLens naming convention):
-
-| File         | Required For              | Mandatory | Expected Columns (subset)                 |
-|--------------|---------------------------|-----------|-------------------------------------------|
-| movies.csv   | Content + Hybrid + Enrich | Yes       | movieId, title, genres                    |
-| ratings.csv  | Collaborative + Hybrid    | Yes (for user/hybrid modes) | userId, movieId, rating     |
-| tags.csv     | Content (improves text)   | Optional  | userId, movieId, tag                      |
-
-Place them in `data/` (not tracked by git). See `data/README.md` for download instructions (e.g. MovieLens 25M/Latest). Larger datasets (e.g. 25M) may take longer to build TF-IDF; start with the small (e.g. ml-latest-small) subset for experimentation.
-
----
-
-## 3. Environment Setup
-
-Python version: 3.10–3.12 recommended (avoid 3.13 if `scikit-surprise` install issues arise; current code does NOT require scikit-surprise at runtime).
-
-1. Create and activate a virtual environment:
-	 - Windows (PowerShell):
-		 ```powershell
-		 python -m venv .venv
-		 .venv\Scripts\Activate.ps1
-		 ```
-2. Install dependencies:
-	 ```powershell
-	 pip install -r requirements.txt
-	 ```
-
-Note: `scikit-surprise` is listed but currently unused after refactoring to pure scikit-learn. You may remove it if build issues occur.
-
----
-
-## 4. CLI Usage (`app.py`)
-
-Run the CLI from the project root after placing the CSVs in `data/`.
-
-General pattern:
-```powershell
-python app.py <mode> [options]
-```
-
-Supported modes:
-
-1. Content-Based by Title:
-```powershell
-python app.py content --title "Toy Story (1995)" --top 5
-```
-
-2. Collaborative by User ID:
-```powershell
-python app.py user --user 1 --top 10
-```
-
-3. Hybrid (User + Anchor Title):
-```powershell
-python app.py hybrid --user 1 --title "Toy Story (1995)" --alpha 0.6 --top 8
-```
-
-Additional global options:
-| Option       | Meaning                                |
-|--------------|-----------------------------------------|
-| --data-dir   | Alternate path to data directory        |
-| --json       | Output raw JSON (machine-friendly)      |
-
-Example JSON output:
-```powershell
-python app.py content --title "Toy Story (1995)" --top 3 --json
-```
-
----
-
-## 5. Programmatic Usage
-
-```python
-from src.content_recommender import ContentRecommender
-from src.collaborative_recommender import CollaborativeRecommender
-from src.hybrid_recommender import HybridRecommender
-
-content = ContentRecommender("data/movies.csv", "data/tags.csv")
-content.fit()
-print(content.recommend("Toy Story (1995)", 5))
-
-collab = CollaborativeRecommender("data/ratings.csv")
-collab.fit()
-print(collab.recommend(user_id=1, n=5))
-
-hybrid = HybridRecommender(alpha=0.5)
-hybrid.fit()
-print(hybrid.recommend_hybrid(user_id=1, title="Toy Story (1995)", n=5))
-```
-
----
-
-## 6. Design Notes & Trade-offs
-
-Content-Based:
-- Computes TF-IDF matrix once. Similarity for a single title is computed on-demand (no full NxN cosine matrix to save memory).
-- Uses title + genres + aggregated tags.
-
-Collaborative:
-- Matrix factorization with `TruncatedSVD` over (user x movie) ratings pivot.
-- Zero-filling missing ratings is simplistic; better approaches include centering, implicit feedback weighting, ALS, or using libraries like `implicit`.
-
-Hybrid:
-- Inverse-rank scaling of content list combined with raw latent scores.
-- Blend weight alpha in [0,1].
-
----
+Happy recommending! 🚀
 
 ## 7. Notebooks
 
@@ -212,4 +85,66 @@ After adding data, rerun to see populated results.
 ---
 
 Happy recommending! 🚀
+
+---
+
+## 13. REST API & Frontend
+
+A FastAPI service (`api.py`) exposes JSON endpoints:
+
+| Endpoint | Params | Description |
+|----------|--------|-------------|
+| GET /health | - | Health check |
+| GET /recommend/content | title, n, explain? | Content-based by title |
+| GET /recommend/user | user_id, n, explain? | Collaborative by user |
+| GET /recommend/hybrid | user_id, title, alpha, n, explain? | Hybrid blend |
+
+Run the API:
+```powershell
+uvicorn api:app --reload --port 8000
+```
+Then open interactive docs at: http://127.0.0.1:8000/docs
+
+### Frontend
+
+Static demo page under `web/index.html` can be served by any static server (or just open directly if same origin with API). For local simplicity:
+```powershell
+python -m http.server 5500 -d web
+```
+Open http://127.0.0.1:5500 and ensure the API is running (CORS is enabled).
+
+---
+
+## 14. LLM Explanations (Optional, Open‑Source Only)
+
+`llm_explainer.py` now uses ONLY open-source Hugging Face models (default: `sshleifer/distilbart-cnn-12-6`) for short natural-language rationales. No credit-based APIs are called.
+
+If transformers not installed or the model download fails, a heuristic explanation string is produced instead.
+
+Install (already in `requirements.txt`):
+```powershell
+pip install transformers sentencepiece accelerate
+```
+
+Optional: choose a different summarization model:
+```powershell
+$Env:LLM_MODEL_ID = "facebook/bart-large-cnn"
+```
+
+Use the API with explanation:
+```powershell
+curl "http://127.0.0.1:8000/recommend/hybrid?user_id=1&title=Toy%20Story%20(1995)&explain=true"
+```
+
+No API keys required. Large models may take time and memory; pick a smaller model if constraints apply.
+
+---
+
+## 15. Next Ideas
+
+- Embedding-based semantic expansion (e.g., sentence-transformers) for better cold-start.
+- Batch LLM explanation generation + caching.
+- Richer frontend (React/Vue) with charts and rating feedback loop.
+- Dockerfile + CI/CD pipeline.
+
 
